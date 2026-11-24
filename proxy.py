@@ -2,7 +2,9 @@
 
 Run:  python3 proxy.py
 Test: curl -x http://127.0.0.1:8888 http://example.com
+      curl -x http://127.0.0.1:8888 https://example.com   (CONNECT tunnel)
 """
+import select
 import socket
 
 LISTEN_HOST = "127.0.0.1"
@@ -73,6 +75,21 @@ def send_error(conn, code, reason):
         pass  # client already gone
 
 
+def tunnel(client, upstream):
+    """Relay raw bytes both ways until either side closes. HTTPS stays encrypted, so no parsing or caching."""
+    sockets = [client, upstream]
+    while True:
+        readable, _, _ = select.select(sockets, [], [], TIMEOUT)
+        if not readable:  # both sides idle for TIMEOUT seconds
+            return
+        for src in readable:
+            dst = upstream if src is client else client
+            data = src.recv(BUF_SIZE)
+            if not data:  # one side closed: tunnel is done
+                return
+            dst.sendall(data)
+
+
 def handle_client(conn, addr):
     """Serve one client connection end to end. Roles B/C/D plug in here."""
     with conn:
@@ -94,13 +111,16 @@ def handle_client(conn, addr):
             return
         print(f"{addr[0]}:{addr[1]} {method} {host}:{port}{path}")
 
-        if method == "CONNECT":  # HTTPS tunnel, not implemented yet
-            send_error(conn, 501, "Not Implemented")
-            return
-
         sent = False
         try:
             with socket.create_connection((host, port), timeout=TIMEOUT) as upstream:
+                if method == "CONNECT":  # HTTPS: open a blind byte tunnel
+                    conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    sent = True
+                    if body:  # bytes the client sent right after the CONNECT headers
+                        upstream.sendall(body)
+                    tunnel(conn, upstream)
+                    return
                 upstream.sendall(build_upstream_request(head, body, method, path, version))
                 while True:
                     chunk = upstream.recv(BUF_SIZE)
