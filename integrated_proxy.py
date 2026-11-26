@@ -49,11 +49,11 @@ def build_chrome_command(
     start_url: str,
     profile_dir: str,
 ) -> list:
-    """Build Chrome CLI arguments forcing HTTP traffic through the local proxy."""
+    """Build Chrome CLI arguments routing HTTP and HTTPS traffic through the local proxy."""
     return [
         chrome_path,
         f"--user-data-dir={profile_dir}",
-        f"--proxy-server=http={proxy_host}:{proxy_port}",
+        f"--proxy-server=http://{proxy_host}:{proxy_port}",
         "--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable,HttpsFirstModeV2ForEngagedSites,HttpsFirstModeV2ForTypicallySecureUsers",
         "--no-first-run",
         "--no-default-browser-check",

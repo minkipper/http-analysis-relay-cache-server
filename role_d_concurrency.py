@@ -110,6 +110,7 @@ try:
         build_upstream_request as _proxy_build_upstream_request,
         recv_request as _proxy_recv_request,
         send_error as _proxy_send_error,
+        tunnel as _proxy_tunnel,
     )
     _HAS_ROLE_A_PROXY = True
 except ImportError:
@@ -118,6 +119,7 @@ except ImportError:
     _proxy_build_upstream_request = None
     _proxy_recv_request = None
     _proxy_send_error = None
+    _proxy_tunnel = None
     _HAS_ROLE_A_PROXY = False
 
 recv_http_request = _proxy_recv_request or _fallback_recv_request
@@ -610,10 +612,6 @@ class MultiThreadedProxyServer:
             path = info["path"]
             is_blocked = info["is_blocked"]
 
-            if method == "CONNECT":
-                self.send_error(client_socket, 501, "Not Implemented")
-                return
-
             if is_blocked:
                 self.sync.record_blocked()
                 blocked_body = b"<html><body><h1>403 Forbidden: Blocked by Proxy Filter</h1></body></html>"
@@ -624,6 +622,31 @@ class MultiThreadedProxyServer:
                     f"Connection: close\r\n\r\n"
                 ).encode("latin-1") + blocked_body
                 client_socket.sendall(blocked_resp)
+                return
+
+            # [역할 A] HTTPS(CONNECT): encrypted end to end, so relay bytes blindly (no parsing/caching)
+            if method == "CONNECT":
+                if _proxy_tunnel is None:
+                    self.send_error(client_socket, 501, "Not Implemented")
+                    return
+                try:
+                    upstream = socket.create_connection((host, port), timeout=float(PROXY_TIMEOUT))
+                except socket.timeout:
+                    self.sync.record_error()
+                    self.send_error(client_socket, 504, "Gateway Timeout")
+                    return
+                except OSError:
+                    self.sync.record_error()
+                    self.send_error(client_socket, 502, "Bad Gateway")
+                    return
+                with upstream:
+                    client_socket.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    if body:  # bytes the client sent right after the CONNECT headers
+                        upstream.sendall(body)
+                    try:
+                        _proxy_tunnel(client_socket, upstream)
+                    except OSError:
+                        pass  # either side closed or reset the tunnel
                 return
 
             # 2) [역할 D Lock + 역할 C] 정규화된 키로 LRU 캐시 조회
@@ -1182,6 +1205,20 @@ def _send_raw_proxy_request(proxy_port: int, request_line: str, extra_headers: s
         return b"".join(chunks)
 
 
+def _send_connect_tunnel_request(proxy_port: int, origin_port: int, path: str) -> bytes:
+    """CONNECT through the proxy, then send a plain GET inside the tunnel (mock origin speaks plain HTTP)."""
+    with socket.create_connection(("127.0.0.1", proxy_port), timeout=5.0) as s:
+        s.sendall(f"CONNECT 127.0.0.1:{origin_port} HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\n\r\n".encode("latin-1"))
+        chunks = [s.recv(4096)]  # "200 Connection Established" arrives before the origin sends anything
+        s.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".encode("latin-1"))
+        while True:
+            data = s.recv(4096)
+            if not data:
+                break
+            chunks.append(data)
+        return b"".join(chunks)
+
+
 def run_self_tests() -> None:
     """역할 A · B · C · D 전체 모듈 통합 검증 (7단계)."""
     def check(name: str, cond: bool):
@@ -1217,14 +1254,17 @@ def run_self_tests() -> None:
         check("1. 4-role E2E integration (1st MISS -> 2nd HIT, origin called once)",
               b"ok:/ok" in r1 and r1 == r2 and origin_state["calls"] == 1)
 
-        # [2] 역할 B 블랙리스트 차단(403), 비정상 포트(400), CONNECT(501)
+        # [2] 역할 B 블랙리스트 차단(403, CONNECT 포함), 비정상 포트(400), HTTPS CONNECT 터널(200)
         r_blk = _send_raw_proxy_request(proxy_port, "GET http://game.com/play HTTP/1.1", "Host: game.com\r\n")
         r_bad = _send_raw_proxy_request(proxy_port, "GET http://example.com:abc/ HTTP/1.1", "Host: example.com\r\n")
-        r_con = _send_raw_proxy_request(proxy_port, "CONNECT example.com:443 HTTP/1.1", "Host: example.com:443\r\n")
-        check("2. Role B blacklist (403), invalid port (400), HTTPS CONNECT (501)",
+        r_con_blk = _send_raw_proxy_request(proxy_port, "CONNECT game.com:443 HTTP/1.1", "Host: game.com:443\r\n")
+        r_con = _send_connect_tunnel_request(proxy_port, origin_port, "/tunnel")
+        check("2. Role B blacklist (403), invalid port (400), HTTPS CONNECT tunnel (200)",
               r_blk.startswith(b"HTTP/1.1 403 Forbidden")
               and r_bad.startswith(b"HTTP/1.1 400 Bad Request")
-              and r_con.startswith(b"HTTP/1.1 501 Not Implemented"))
+              and r_con_blk.startswith(b"HTTP/1.1 403 Forbidden")
+              and r_con.startswith(b"HTTP/1.1 200 Connection Established")
+              and b"ok:/tunnel" in r_con)
 
         # [3] 역할 C URL 정규화(#frag) 및 is_cacheable 정책 필터링 (no-store, Set-Cookie, 404, oversize)
         r_frag = _send_raw_proxy_request(
@@ -1239,7 +1279,7 @@ def run_self_tests() -> None:
         _send_raw_proxy_request(proxy_port, f"GET http://127.0.0.1:{origin_port}/huge HTTP/1.1", f"Host: 127.0.0.1:{origin_port}\r\n")
         rep_3 = proxy.sync.get_benchmark_report()
         check("3. Role C URL normalization (#frag) & is_cacheable/oversize enforcement",
-              r_frag == r1 and calls_before_policies == 1
+              r_frag == r1 and calls_before_policies == 2  # /ok once (then cached) + /tunnel once in test 2
               and rep_3["cache_hits"] == 2
               and rep_3["cache_uncacheable"] == 3
               and rep_3["cache_rejected_oversize"] == 1)
