@@ -54,6 +54,7 @@ def build_chrome_command(
         chrome_path,
         f"--user-data-dir={profile_dir}",
         f"--proxy-server=http://{proxy_host}:{proxy_port}",
+        "--proxy-bypass-list=<-loopback>",  # also proxy 127.0.0.1 so the local demo page goes through the cache
         "--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable,HttpsFirstModeV2ForEngagedSites,HttpsFirstModeV2ForTypicallySecureUsers",
         "--no-first-run",
         "--no-default-browser-check",

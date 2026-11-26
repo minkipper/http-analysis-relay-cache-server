@@ -50,7 +50,17 @@ python3 integrated_proxy.py
 * macOS에서는 크롬 자동 실행이 되지 않으므로 다른 터미널에서 직접 실행합니다.
 
 ```bash
-open -na "Google Chrome" --args --proxy-server="http://127.0.0.1:8888" --user-data-dir=/tmp/chrome-proxy-test
+open -na "Google Chrome" --args --proxy-server="http://127.0.0.1:8888" --proxy-bypass-list="<-loopback>" --user-data-dir=/tmp/chrome-proxy-test
+```
+
+* **캐시 테스트 페이지**: 4K 사진 12장(약 27MB)을 일부러 느리게 응답하는 로컬 HTTP 사이트입니다. 사진이 기본 캐시(10MB)보다 크므로 프록시를 `--max-bytes 100000000`으로 실행한 뒤, 프록시 크롬 창에서 `http://127.0.0.1:9000/`을 열고 **[다시 불러오기]**를 누르면 캐시 효과가 화면의 로딩 시간으로 보입니다. (`--delay`로 지연 시간 조절, 사진 출처는 `demo/CREDITS.md`)
+
+```bash
+python3 demo/demo_server.py
+```
+
+```bash
+python3 integrated_proxy.py --max-bytes 100000000
 ```
 
 * 주요 옵션: `--no-cache` (캐시 끄기), `--single-thread` (단일 스레드), `--no-browser` (크롬 자동 실행 안 함), `--port` (포트 변경)
@@ -115,7 +125,17 @@ python3 integrated_proxy.py
 * On macOS Chrome is not launched automatically; start it from another terminal:
 
 ```bash
-open -na "Google Chrome" --args --proxy-server="http://127.0.0.1:8888" --user-data-dir=/tmp/chrome-proxy-test
+open -na "Google Chrome" --args --proxy-server="http://127.0.0.1:8888" --proxy-bypass-list="<-loopback>" --user-data-dir=/tmp/chrome-proxy-test
+```
+
+* **Cache demo page**: a local HTTP site serving twelve 4K photos (~27 MB) slowly on purpose. The photos exceed the default 10 MB cache, so run the proxy with `--max-bytes 100000000`, open `http://127.0.0.1:9000/` in the proxied Chrome window, and press **Reload** to see the cache effect in the on-page load time (`--delay` sets the delay; photo credits in `demo/CREDITS.md`).
+
+```bash
+python3 demo/demo_server.py
+```
+
+```bash
+python3 integrated_proxy.py --max-bytes 100000000
 ```
 
 * Options: `--no-cache`, `--single-thread`, `--no-browser`, `--port`
