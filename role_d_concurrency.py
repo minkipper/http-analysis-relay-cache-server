@@ -111,6 +111,7 @@ try:
         recv_request as _proxy_recv_request,
         send_error as _proxy_send_error,
         tunnel as _proxy_tunnel,
+        is_self_target as _proxy_is_self_target,
     )
     _HAS_ROLE_A_PROXY = True
 except ImportError:
@@ -120,6 +121,7 @@ except ImportError:
     _proxy_recv_request = None
     _proxy_send_error = None
     _proxy_tunnel = None
+    _proxy_is_self_target = None
     _HAS_ROLE_A_PROXY = False
 
 recv_http_request = _proxy_recv_request or _fallback_recv_request
@@ -611,6 +613,12 @@ class MultiThreadedProxyServer:
             url_key = info["url_key"]
             path = info["path"]
             is_blocked = info["is_blocked"]
+
+            # A request aimed at this proxy itself would be relayed back here forever and exhaust all worker threads
+            if _proxy_is_self_target and _proxy_is_self_target(host, port, self.host, self.bound_port):
+                self.sync.record_error()
+                self.send_error(client_socket, 508, "Loop Detected")
+                return
 
             if is_blocked:
                 self.sync.record_blocked()

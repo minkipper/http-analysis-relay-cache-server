@@ -49,6 +49,16 @@ def parse_target(head):
     return method, host, int(port or 80), "/" + path, version
 
 
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def is_self_target(host, port, listen_host=LISTEN_HOST, listen_port=LISTEN_PORT):
+    """True if relaying would send the request back to this proxy itself (an endless forwarding loop)."""
+    # shortcut: only catches loopback/listen-host addresses, add a Via header check if the proxy listens on 0.0.0.0
+    host = host.lower().rstrip(".").strip("[]")
+    return port == listen_port and (host in LOOPBACK_HOSTS or host == listen_host)
+
+
 def build_upstream_request(head, body, method, path, version):
     """Rewrite the request for the origin server: origin-form path and Connection: close."""
     lines = [f"{method} {path} {version}".encode("latin-1")]
@@ -110,6 +120,10 @@ def handle_client(conn, addr):
             send_error(conn, 400, "Bad Request")
             return
         print(f"{addr[0]}:{addr[1]} {method} {host}:{port}{path}")
+
+        if is_self_target(host, port):
+            send_error(conn, 508, "Loop Detected")
+            return
 
         sent = False
         try:
